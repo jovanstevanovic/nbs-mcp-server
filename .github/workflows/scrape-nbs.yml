@@ -2,6 +2,9 @@ name: NBS Scraper
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - jovanstevanovic-mcp-server
 
 jobs:
   scrape:
