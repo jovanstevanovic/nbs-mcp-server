@@ -108,6 +108,26 @@ def _find_link_by_keywords(soup, keywords):
     return None
 
 
+def _find_in_sitemap_for_keywords(keywords):
+    sitemap_url = urljoin(BASE, '/sitemap.xml')
+    try:
+        r = _get(sitemap_url)
+        r.raise_for_status()
+    except Exception:
+        return []
+    txt = r.text
+    links = []
+    # naive extraction of <loc>...</loc>
+    import re
+    for m in re.findall(r'<loc>(.*?)</loc>', txt, flags=re.I):
+        lower = m.lower()
+        for kw in keywords:
+            if kw in lower:
+                links.append(m)
+                break
+    return links
+
+
 def fetch_exchange_rates_sync():
     # Try searching homepage for likely exchange-related links
     try:
@@ -115,13 +135,18 @@ def fetch_exchange_rates_sync():
         r.raise_for_status()
     except Exception as e:
         print('ERROR_FETCH_EXCHANGE_HOME', e)
-        return None
-    soup = BeautifulSoup(r.text, 'html.parser')
+        # continue to try sitemap and fallbacks
+        r = None
     keywords = ['kurs', 'exchange', 'deviz', 'kursevi', 'kursna']
-    link = _find_link_by_keywords(soup, keywords)
     candidates = []
-    if link:
-        candidates.append(urljoin(BASE, link))
+    if r:
+        soup = BeautifulSoup(r.text, 'html.parser')
+        link = _find_link_by_keywords(soup, keywords)
+        if link:
+            candidates.append(urljoin(BASE, link))
+    # try sitemap
+    for link in _find_in_sitemap_for_keywords(keywords):
+        candidates.append(link)
     # common fallback paths
     candidates.extend([
         urljoin(BASE, '/en/finansijsko_trziste'),
@@ -130,16 +155,20 @@ def fetch_exchange_rates_sync():
         urljoin(BASE, '/en/kursna-lista'),
         urljoin(BASE, '/en/finansijsko_trziste/ExchangeRates')
     ])
-    rates = []
+    seen = set()
     for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
         try:
-            r = _get(url)
-            r.raise_for_status()
+            r2 = _get(url)
+            r2.raise_for_status()
         except Exception as e:
             print('ERROR_FETCH_EXCHANGE_TRY', url, e)
             continue
-        soup2 = BeautifulSoup(r.text, 'html.parser')
+        soup2 = BeautifulSoup(r2.text, 'html.parser')
         tables = soup2.find_all('table')
+        rates = []
         for table in tables:
             for tr in table.find_all('tr'):
                 cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
@@ -159,24 +188,31 @@ def fetch_cpi_sync():
         return None
     soup = BeautifulSoup(r.text, 'html.parser')
     keywords = ['inflacija', 'inflation', 'cpi', 'indeks', 'potro']
-    link = _find_link_by_keywords(soup, keywords)
     candidates = []
+    link = _find_link_by_keywords(soup, keywords)
     if link:
         candidates.append(urljoin(BASE, link))
+    # sitemap-based discovery
+    for link in _find_in_sitemap_for_keywords(keywords):
+        candidates.append(link)
     candidates.extend([
         urljoin(BASE, '/en/publikacije'),
         urljoin(BASE, '/statistika'),
         urljoin(BASE, '/en/statistics'),
         urljoin(BASE, '/sr/statistika')
     ])
+    seen = set()
     for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
         try:
-            r = _get(url)
-            r.raise_for_status()
+            r2 = _get(url)
+            r2.raise_for_status()
         except Exception as e:
             print('ERROR_FETCH_CPI_TRY', url, e)
             continue
-        soup2 = BeautifulSoup(r.text, 'html.parser')
+        soup2 = BeautifulSoup(r2.text, 'html.parser')
         table = soup2.find('table')
         if table:
             rows = []
