@@ -1,4 +1,5 @@
 import json
+import time
 import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -9,13 +10,15 @@ BASE = 'https://nbs.rs'
 def fetch_belibor_sync():
     url = urljoin(BASE, '/sr/finansijsko_trziste/dnevni-pregled-kamatnih-stopa')
     try:
-        r = httpx.get(url, timeout=20.0)
+        r = _get(url)
         r.raise_for_status()
     except Exception as e:
+        # try to detect redirect target in error message (httpx raises for status if not ok)
         print('ERROR_FETCH_BELIBOR', e)
         return None
     soup = BeautifulSoup(r.text, 'html.parser')
-    table = soup.find('table', class_='responsive-table')
+    # primary: table on target page
+    table = soup.find('table', class_='responsive-table') or soup.find('table')
     rows = []
     if table:
         tbody = table.find('tbody') or table
@@ -23,6 +26,39 @@ def fetch_belibor_sync():
             cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
             if cells:
                 rows.append({'tenor': cells[0], 'values': cells[1:]})
+    # fallback: some pages embed content via iframe or require fetching webappcenter page
+    if not rows:
+        # look for iframe that might contain the table
+        iframe = soup.find('iframe')
+        if iframe and iframe.has_attr('src'):
+            try:
+                iframe_url = urljoin(BASE, iframe['src'])
+                r2 = _get(iframe_url)
+                r2.raise_for_status()
+                soup2 = BeautifulSoup(r2.text, 'html.parser')
+                table2 = soup2.find('table')
+                if table2:
+                    for tr in table2.find_all('tr'):
+                        cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+                        if cells:
+                            rows.append({'tenor': cells[0], 'values': cells[1:]})
+            except Exception as e:
+                print('ERROR_FETCH_BELIBOR_IFRAME', e)
+        # try known webappcenter openpage pattern
+        if not rows:
+            webapp_url = 'https://webappcenter.nbs.rs/webapp/CultureInfo/OpenPage?culture=sr-Latn&&pageUrl=/WebApp/FinancialMarket/BeliborAndGovernmentSecurities?isSearchExecuted=true'
+            try:
+                r3 = _get(webapp_url)
+                r3.raise_for_status()
+                soup3 = BeautifulSoup(r3.text, 'html.parser')
+                table3 = soup3.find('table')
+                if table3:
+                    for tr in table3.find_all('tr'):
+                        cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+                        if cells:
+                            rows.append({'tenor': cells[0], 'values': cells[1:]})
+            except Exception as e:
+                print('ERROR_FETCH_BELIBOR_WEBAPP', e)
     date_input = soup.find('input', id='Date')
     date = date_input['value'] if date_input and date_input.has_attr('value') else None
     return {'source': 'nbs', 'page': url, 'date': date, 'rows': rows}
@@ -45,13 +81,21 @@ def fetch_latest_ioi_pdf_sync():
     return pdf_links[0] if pdf_links else None
 
 
-def _get(url, **kw):
+def _get(url, retries=3, backoff=1.0, **kw):
     headers = kw.pop('headers', {})
     headers.setdefault('User-Agent', 'nbs-mcp-scraper/1.0 (+https://github.com/jovanstevanovic/nbs-mcp-server)')
-    try:
-        return httpx.get(url, timeout=20.0, follow_redirects=True, headers=headers, **kw)
-    except Exception as e:
-        raise
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = httpx.get(url, timeout=20.0, follow_redirects=True, headers=headers, **kw)
+            return r
+        except Exception as e:
+            last_exc = e
+            wait = backoff * attempt
+            print(f'_get attempt {attempt} failed, retrying after {wait}s: {e}')
+            time.sleep(wait)
+    # final failure
+    raise last_exc
 
 
 def _find_link_by_keywords(soup, keywords):
