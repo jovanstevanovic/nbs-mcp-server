@@ -45,10 +45,105 @@ def fetch_latest_ioi_pdf_sync():
     return pdf_links[0] if pdf_links else None
 
 
+def _get(url, **kw):
+    headers = kw.pop('headers', {})
+    headers.setdefault('User-Agent', 'nbs-mcp-scraper/1.0 (+https://github.com/jovanstevanovic/nbs-mcp-server)')
+    try:
+        return httpx.get(url, timeout=20.0, follow_redirects=True, headers=headers, **kw)
+    except Exception as e:
+        raise
+
+
+def _find_link_by_keywords(soup, keywords):
+    for a in soup.find_all('a', href=True):
+        txt = (a.get_text(separator=' ', strip=True) or '') + ' ' + a['href']
+        lower = txt.lower()
+        for kw in keywords:
+            if kw in lower:
+                return a['href']
+    return None
+
+
+def fetch_exchange_rates_sync():
+    # Try searching homepage for likely exchange-related links
+    try:
+        r = _get(BASE)
+        r.raise_for_status()
+    except Exception as e:
+        print('ERROR_FETCH_EXCHANGE_HOME', e)
+        return None
+    soup = BeautifulSoup(r.text, 'html.parser')
+    keywords = ['kurs', 'exchange', 'deviz', 'kursevi', 'kursna']
+    link = _find_link_by_keywords(soup, keywords)
+    if link:
+        url = urljoin(BASE, link)
+    else:
+        # common fallback paths
+        url = urljoin(BASE, '/en/finansijsko_trziste')
+    try:
+        r = _get(url)
+        r.raise_for_status()
+    except Exception as e:
+        print('ERROR_FETCH_EXCHANGE', e)
+        return None
+    soup = BeautifulSoup(r.text, 'html.parser')
+    tables = soup.find_all('table')
+    rates = []
+    for table in tables:
+        # simple heuristic: find rows with at least 2-3 cells and numeric-looking values
+        for tr in table.find_all('tr'):
+            cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+            if len(cells) >= 2:
+                rates.append(cells)
+        if rates:
+            break
+    return {'source': url, 'rows': rates}
+
+
+def fetch_cpi_sync():
+    try:
+        r = _get(BASE)
+        r.raise_for_status()
+    except Exception as e:
+        print('ERROR_FETCH_CPI_HOME', e)
+        return None
+    soup = BeautifulSoup(r.text, 'html.parser')
+    keywords = ['inflacija', 'inflation', 'cpi', 'indeks', 'potro']
+    link = _find_link_by_keywords(soup, keywords)
+    if link:
+        url = urljoin(BASE, link)
+    else:
+        url = urljoin(BASE, '/en/publikacije')
+    try:
+        r = _get(url)
+        r.raise_for_status()
+    except Exception as e:
+        print('ERROR_FETCH_CPI', e)
+        return None
+    soup = BeautifulSoup(r.text, 'html.parser')
+    # look for tables or PDF links
+    table = soup.find('table')
+    if table:
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+            if cells:
+                rows.append(cells)
+        return {'source': url, 'rows': rows}
+    # fallback: find PDFs mentioning inflation
+    for a in soup.find_all('a', href=True):
+        txt = a.get_text(separator=' ', strip=True).lower()
+        if 'infl' in txt or 'cpi' in txt or 'indeks' in txt:
+            return urljoin(BASE, a['href'])
+    return None
+
+
 if __name__ == '__main__':
     bel = fetch_belibor_sync()
+    exchange = fetch_exchange_rates_sync()
+    cpi = fetch_cpi_sync()
     ioi = fetch_latest_ioi_pdf_sync()
-    out = {'belibor': bel, 'latest_ioi_pdf': ioi}
+    out = {'belibor': bel, 'exchange_rates': exchange, 'cpi': cpi, 'latest_ioi_pdf': ioi}
     with open('nbs_scrape_output.json', 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     print('WROTE nbs_scrape_output.json')
