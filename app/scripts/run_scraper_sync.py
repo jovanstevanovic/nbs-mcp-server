@@ -4,7 +4,7 @@ import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-BASE = 'https://nbs.rs'
+BASE = 'https://www.nbs.rs'
 
 
 def fetch_belibor_sync():
@@ -119,29 +119,35 @@ def fetch_exchange_rates_sync():
     soup = BeautifulSoup(r.text, 'html.parser')
     keywords = ['kurs', 'exchange', 'deviz', 'kursevi', 'kursna']
     link = _find_link_by_keywords(soup, keywords)
+    candidates = []
     if link:
-        url = urljoin(BASE, link)
-    else:
-        # common fallback paths
-        url = urljoin(BASE, '/en/finansijsko_trziste')
-    try:
-        r = _get(url)
-        r.raise_for_status()
-    except Exception as e:
-        print('ERROR_FETCH_EXCHANGE', e)
-        return None
-    soup = BeautifulSoup(r.text, 'html.parser')
-    tables = soup.find_all('table')
+        candidates.append(urljoin(BASE, link))
+    # common fallback paths
+    candidates.extend([
+        urljoin(BASE, '/en/finansijsko_trziste'),
+        urljoin(BASE, '/kursna-lista'),
+        urljoin(BASE, '/sr/kursna-lista'),
+        urljoin(BASE, '/en/kursna-lista'),
+        urljoin(BASE, '/en/finansijsko_trziste/ExchangeRates')
+    ])
     rates = []
-    for table in tables:
-        # simple heuristic: find rows with at least 2-3 cells and numeric-looking values
-        for tr in table.find_all('tr'):
-            cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
-            if len(cells) >= 2:
-                rates.append(cells)
-        if rates:
-            break
-    return {'source': url, 'rows': rates}
+    for url in candidates:
+        try:
+            r = _get(url)
+            r.raise_for_status()
+        except Exception as e:
+            print('ERROR_FETCH_EXCHANGE_TRY', url, e)
+            continue
+        soup2 = BeautifulSoup(r.text, 'html.parser')
+        tables = soup2.find_all('table')
+        for table in tables:
+            for tr in table.find_all('tr'):
+                cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+                if len(cells) >= 2:
+                    rates.append(cells)
+            if rates:
+                return {'source': url, 'rows': rates}
+    return None
 
 
 def fetch_cpi_sync():
@@ -154,31 +160,35 @@ def fetch_cpi_sync():
     soup = BeautifulSoup(r.text, 'html.parser')
     keywords = ['inflacija', 'inflation', 'cpi', 'indeks', 'potro']
     link = _find_link_by_keywords(soup, keywords)
+    candidates = []
     if link:
-        url = urljoin(BASE, link)
-    else:
-        url = urljoin(BASE, '/en/publikacije')
-    try:
-        r = _get(url)
-        r.raise_for_status()
-    except Exception as e:
-        print('ERROR_FETCH_CPI', e)
-        return None
-    soup = BeautifulSoup(r.text, 'html.parser')
-    # look for tables or PDF links
-    table = soup.find('table')
-    if table:
-        rows = []
-        for tr in table.find_all('tr'):
-            cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
-            if cells:
-                rows.append(cells)
-        return {'source': url, 'rows': rows}
-    # fallback: find PDFs mentioning inflation
-    for a in soup.find_all('a', href=True):
-        txt = a.get_text(separator=' ', strip=True).lower()
-        if 'infl' in txt or 'cpi' in txt or 'indeks' in txt:
-            return urljoin(BASE, a['href'])
+        candidates.append(urljoin(BASE, link))
+    candidates.extend([
+        urljoin(BASE, '/en/publikacije'),
+        urljoin(BASE, '/statistika'),
+        urljoin(BASE, '/en/statistics'),
+        urljoin(BASE, '/sr/statistika')
+    ])
+    for url in candidates:
+        try:
+            r = _get(url)
+            r.raise_for_status()
+        except Exception as e:
+            print('ERROR_FETCH_CPI_TRY', url, e)
+            continue
+        soup2 = BeautifulSoup(r.text, 'html.parser')
+        table = soup2.find('table')
+        if table:
+            rows = []
+            for tr in table.find_all('tr'):
+                cells = [td.get_text(strip=True) for td in tr.find_all(['td','th'])]
+                if cells:
+                    rows.append(cells)
+            return {'source': url, 'rows': rows}
+        for a in soup2.find_all('a', href=True):
+            txt = a.get_text(separator=' ', strip=True).lower()
+            if 'infl' in txt or 'cpi' in txt or 'indeks' in txt:
+                return urljoin(BASE, a['href'])
     return None
 
 
